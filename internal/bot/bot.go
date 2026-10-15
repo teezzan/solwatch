@@ -205,6 +205,8 @@ func (b *Bot) RunTelegram(ctx context.Context, tg *telegram.Client, log *slog.Lo
 			if u.Message == nil || !strings.HasPrefix(u.Message.Text, "/") {
 				continue
 			}
+			cmd, _, _ := strings.Cut(u.Message.Text, " ")
+			log.Info("command", "chat_id", u.Message.Chat.ID, "cmd", cmd)
 			reply := b.Handle(ctx, u.Message.Chat.ID, u.Message.Text)
 			if err := tg.SendMessage(ctx, u.Message.Chat.ID, html.EscapeString(reply)); err != nil {
 				log.Warn("telegram reply failed", "chat_id", u.Message.Chat.ID, "err", err)
