@@ -121,7 +121,15 @@ func (r *Reconciler) Sync(ctx context.Context) error {
 	// address is required"), so an empty watch list means deleting it.
 	if len(addrs) == 0 {
 		if id == "" {
-			return nil
+			// Fresh state (e.g. a new pod with an emptyDir database) but a
+			// webhook from a previous run may still point at us and keep
+			// spending credits on events nobody watches. Find it and delete it.
+			if id, err = r.adopt(ctx); err != nil || id == "" {
+				return err
+			}
+			if err := r.State.Set(ctx, keyWebhookID, id); err != nil {
+				return err
+			}
 		}
 		return r.Teardown(ctx)
 	}

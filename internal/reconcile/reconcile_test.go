@@ -90,10 +90,11 @@ func TestSyncLifecycle(t *testing.T) {
 	ctx := context.Background()
 	r, api, st := setup()
 
-	// Nothing watched: no API calls at all.
-	if err := r.Sync(ctx); err != nil || len(api.calls) != 0 {
+	// Nothing watched and no leftover webhook: just one list call.
+	if err := r.Sync(ctx); err != nil || !reflect.DeepEqual(api.calls, []string{"list"}) {
 		t.Fatalf("empty sync: err=%v calls=%v", err, api.calls)
 	}
+	api.calls = nil
 
 	st.addrs["A"] = true
 	if err := r.Sync(ctx); err != nil {
@@ -171,5 +172,25 @@ func TestURLChangeTriggersUpdate(t *testing.T) {
 	r.Sync(ctx)
 	if !reflect.DeepEqual(api.calls, []string{"update"}) || api.hooks["a"].WebhookURL != r.WebhookURL {
 		t.Fatalf("calls=%v hook=%+v", api.calls, api.hooks["a"])
+	}
+}
+
+func TestEmptyStateDeletesLeftoverWebhook(t *testing.T) {
+	// A restarted pod with an emptyDir DB: no watches, no stored ID, but the
+	// previous pod's webhook still points at our URL.
+	r, api, st := setup()
+	api.hooks["old"] = helius.Webhook{WebhookID: "old", WebhookURL: r.WebhookURL, AccountAddresses: []string{"A"}}
+	api.hooks["someone-else"] = helius.Webhook{WebhookID: "someone-else", WebhookURL: "https://other.example.com/hook"}
+	if err := r.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := api.hooks["old"]; ok {
+		t.Error("leftover webhook not deleted")
+	}
+	if _, ok := api.hooks["someone-else"]; !ok {
+		t.Error("deleted a webhook that isn't ours")
+	}
+	if st.kv[keyWebhookID] != "" {
+		t.Errorf("stale id kept: %q", st.kv[keyWebhookID])
 	}
 }

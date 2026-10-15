@@ -31,6 +31,9 @@ type WebhookHandler struct {
 	// how the test fixtures in testdata/ were recorded.
 	CaptureDir string
 	Log        *slog.Logger
+	// OnEvents, if set, is told how many transactions each authenticated
+	// delivery carried. Every one of them cost a credit.
+	OnEvents func(n int)
 }
 
 func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -64,6 +67,9 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.OnEvents != nil {
+		h.OnEvents(len(txs))
+	}
 	for i, tx := range txs {
 		select {
 		case h.Queue <- tx:

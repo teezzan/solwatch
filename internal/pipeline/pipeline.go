@@ -30,6 +30,12 @@ type Processor struct {
 	Tokens   TokenLookup // optional
 	Notifier notify.Notifier
 	Log      *slog.Logger
+
+	// Breaker and OnHot implement the hot-address guardrail: when a watched
+	// address exceeds the breaker's rate, OnHot is called (once) and its
+	// alerts are dropped.
+	Breaker *Breaker
+	OnHot   func(ctx context.Context, address string, eventsPerWindow int)
 }
 
 // Run consumes the queue until it is closed, then returns. Closing the
@@ -79,15 +85,35 @@ func (p *Processor) Process(ctx context.Context, tx *helius.EnhancedTransaction)
 		return
 	}
 
+	// Count one event per watched address in this tx, before any alerting.
+	now := time.Now()
+	hot := map[string]bool{}
+	for _, w := range watchers {
+		if _, done := hot[w.Address]; done {
+			continue
+		}
+		tripped, n := p.Breaker.Observe(w.Address, now)
+		hot[w.Address] = tripped
+		if tripped {
+			log.Warn("hot address breaker tripped", "address", w.Address, "events_per_min", n)
+			if p.OnHot != nil {
+				p.OnHot(ctx, w.Address, n)
+			}
+		}
+	}
+
 	sym := p.symbols(ctx, alert.Mints(tx), log)
 	lag := time.Since(time.Unix(tx.Timestamp, 0)).Round(100 * time.Millisecond)
 	for _, w := range watchers {
+		if hot[w.Address] {
+			continue
+		}
 		a := alert.Build(tx, w.Address, w.Label, sym)
 		if err := p.Notifier.Notify(ctx, w.ChatID, a); err != nil {
 			log.Error("notify failed", "chat_id", w.ChatID, "err", err)
 			continue
 		}
-		log.Info("alert sent", "chat_id", w.ChatID, "address", w.Address, "lag", lag)
+		log.Info("alert routed", "chat_id", w.ChatID, "address", w.Address, "lag", lag)
 	}
 }
 

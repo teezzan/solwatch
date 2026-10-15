@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -97,5 +98,39 @@ func TestProcessIgnoresUnwatched(t *testing.T) {
 	p.Process(ctx, &txs[0])
 	if len(rec.got) != 0 {
 		t.Fatalf("alerted with no watchers: %+v", rec.got)
+	}
+}
+
+func TestProcessTripsBreaker(t *testing.T) {
+	ctx := context.Background()
+	st, _ := store.Open(filepath.Join(t.TempDir(), "p.db"))
+	defer st.Close()
+	const addr = "2KNuy5aBQB58YeLRtj3pJWyXHztaf2jqHWnowThanHmZ"
+	st.AddWatch(ctx, store.Watch{ChatID: 7, Address: addr, Label: "degen"})
+
+	b, _ := os.ReadFile(filepath.Join("..", "..", "testdata", "payloads", "swap_sol_to_token.json"))
+	var txs []helius.EnhancedTransaction
+	json.Unmarshal(b, &txs)
+
+	var hot []string
+	rec := &recorder{}
+	p := &Processor{
+		Store: st, Notifier: rec, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Breaker: &Breaker{Max: 2},
+		OnHot:   func(_ context.Context, a string, n int) { hot = append(hot, a) },
+	}
+	for i := 0; i < 4; i++ {
+		tx := txs[0]
+		tx.Signature = fmt.Sprintf("sig-%d", i)
+		p.Process(ctx, &tx)
+	}
+	if len(hot) != 1 || hot[0] != addr {
+		t.Fatalf("OnHot calls = %v, want exactly one for %s", hot, addr)
+	}
+	// Events 1 and 2 alert, event 3 trips (no alert), event 4 is over the
+	// limit but the breaker already fired; in production the watch is gone
+	// by then. It still alerts here because the fake OnHot doesn't unwatch.
+	if len(rec.got) != 3 {
+		t.Errorf("alerts = %d, want 3", len(rec.got))
 	}
 }
