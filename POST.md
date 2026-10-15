@@ -332,13 +332,17 @@ With symbols resolved, `swapped 0.08221 SOL → 828,678.81 G6kN…pump` becomes
 
 ## Running it for real
 
-No Telegram token was available in the environment I built this in, so Telegram sits
-behind a `Notifier` interface. Without a token, solwatch reads commands from stdin and
-prints alerts to stdout. Adding Telegram later means getting a token from
-[@BotFather](https://t.me/BotFather) and setting `TELEGRAM_BOT_TOKEN`. The Bot API
-client is under 150 lines of `net/http`. I later ran it against a real bot and chat: `/start` and
-`/watch` came in over long polling, and 20 alerts went out with `sendMessage` returning ok,
-2.7 to 4.3 seconds after block time.
+Telegram sits behind a `Notifier` interface. Without a token, solwatch reads commands
+from stdin and prints alerts to stdout, which is how I developed most of it. With a token
+from [@BotFather](https://t.me/BotFather) in `TELEGRAM_BOT_TOKEN`, it uses the Bot API
+(a client of under 150 lines of `net/http`). Here's a real run against a busy mainnet
+wallet: `/watch` came in over long polling, and 20 alerts went out with `sendMessage`
+returning ok, 2.7 to 4.3 seconds after block time.
+
+![solwatch alerts in Telegram for a busy Jupiter trader wallet](docs/telegram-alerts.jpg)
+
+That's a lot of messages for one wallet, which is why the hosted version groups bursts
+into a digest.
 
 ```sh
 cloudflared tunnel --url http://127.0.0.1:8787
