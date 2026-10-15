@@ -51,6 +51,9 @@ flowchart LR
   Otherwise the watched wallet's net token and SOL flows are computed from
   `tokenTransfers`/`nativeTransfers`, and if there are none, Helius' `description` is
   used. Mints are resolved to tickers with DAS `getAssetBatch` and cached in SQLite.
+- **Digests, not floods.** Alerts are buffered per chat and wallet and sent as one
+  message per minute ("🔔 jup trader · 6 events in the last minute: 4 swaps, 2 sends",
+  then up to five lines with tx links). A lone alert still goes out as a single line.
 - **Telegram is just one Notifier.** Without a bot token, solwatch reads commands from
   stdin and prints alerts to stdout. That's how the end-to-end test was run.
 
@@ -73,11 +76,23 @@ The Telegram path has been tested live: `/start` and `/watch` from a real chat, 
 alerts delivered with `sendMessage` returning ok, 2.7–4.3s after block time. `/list`
 and `/unwatch` have only been exercised in console mode and unit tests so far.
 
+![solwatch alerts in Telegram for a busy Jupiter trader wallet](docs/telegram-alerts.jpg)
+
+That run, before digests existed, is why `DIGEST_INTERVAL` now defaults to a minute.
+
 ### Docker
 
 ```sh
 docker build -t solwatch .
 docker run --env-file .env -p 8080:8080 -v solwatch-data:/data solwatch
+```
+
+Without Docker, [ko](https://ko.build) builds and pushes the same static image
+(modernc SQLite is pure Go, so `CGO_ENABLED=0` works). This is how the hosted demo's
+image is built:
+
+```sh
+KO_DOCKER_REPO=<registry>/solwatch ko build ./cmd/solwatch --bare --platform=linux/amd64
 ```
 
 ## Commands
@@ -104,13 +119,31 @@ precedence over `.env`.
 | `WEBHOOK_SECRET` | generated | Value Helius sends back in the `Authorization` header. If unset, a random one is generated and stored in the DB. |
 | `LISTEN_ADDR` | `:8080` | HTTP listen address. |
 | `DB_PATH` | `solwatch.db` | SQLite file. |
-| `MAX_WATCHES_PER_CHAT` | `25` | Per-chat limit, since every event costs credits. |
 | `EXPLORER_TX_URL` | `https://solscan.io/tx/%s` | Link pattern for "view tx". |
 | `HELIUS_WEBHOOK_TYPE` | `enhanced` | Set to `enhancedDevnet` for devnet. |
 | `DELETE_WEBHOOK_ON_EXIT` | `false` | Delete the Helius webhook on shutdown. Useful with quick tunnels, whose URL changes on every run. |
 | `CAPTURE_DIR` | unset | Save every authenticated webhook body here. This is how `testdata/` was recorded. |
 | `CONSOLE_CHAT_ID` | `1` | Chat ID used for commands in console mode. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. Logs are JSON on stderr. |
+
+### Alert grouping and demo guardrails
+
+Every webhook event costs a credit, so a public instance needs limits. The defaults
+are what the hosted demo runs with. Set a number to `0` to turn that limit off.
+
+| Variable | Default | Description |
+|---|---|---|
+| `DIGEST_INTERVAL` | `60s` | Buffer alerts per chat and wallet and send one digest per interval. A single alert still goes out as one normal line. `0` sends every alert immediately. Buffered alerts are flushed on shutdown. |
+| `DIGEST_MAX_LINES` | `5` | Transactions listed in a digest before "+N more". |
+| `MAX_WATCHES_PER_CHAT` | `3` | Wallets one chat can watch. |
+| `MAX_WATCHED_ADDRESSES` | `50` | Distinct wallets across all chats. This is also the size of the Helius webhook's address list. |
+| `WATCH_TTL` | `24h` | Watches expire after this, and the chat gets a note saying how to re-add it. |
+| `HOT_ADDRESS_MAX_PER_MIN` | `30` | If a watched wallet produces more events than this in a minute, it's unwatched for every chat and they're told why. |
+| `HOT_ADDRESS_BLOCK` | `24h` | How long an evicted hot wallet can't be watched again. |
+| `WALLETS_ONLY` | `true` | `/watch` calls `getAccountInfo` (1 credit). Programs (executable accounts) and sysvars are always refused. With this on, so is anything not owned by the System Program: token mints, pools and other program accounts, which are the busiest addresses on chain. |
+| `COMMANDS_PER_MINUTE` | `10` | Per-chat command rate limit. The first command over the limit gets a warning; later ones are ignored until the minute is up. |
+| `USAGE_LOG_INTERVAL` | `1h` | How often to log a `usage` line with today's (UTC) webhook events, webhook API calls, DAS and RPC calls, and an estimated credit total. |
+| `REPO_URL`, `WRITEUP_URL` | this repo, the blog post | Links shown in `/start`. |
 
 ## Helius limits that shape the design
 
