@@ -34,6 +34,12 @@ CREATE TABLE IF NOT EXISTS tokens (
 	symbol TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS blocked (
+	address TEXT PRIMARY KEY,
+	until   INTEGER NOT NULL,
+	reason  TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS kv (
 	key   TEXT PRIMARY KEY,
 	value TEXT NOT NULL
@@ -44,9 +50,10 @@ type Store struct{ db *sql.DB }
 
 // Watch is one chat's subscription to one address.
 type Watch struct {
-	ChatID  int64
-	Address string
-	Label   string
+	ChatID    int64
+	Address   string
+	Label     string
+	CreatedAt time.Time
 }
 
 func Open(path string) (*Store, error) {
@@ -99,7 +106,7 @@ func (s *Store) RemoveWatch(ctx context.Context, chatID int64, addressOrLabel st
 }
 
 func (s *Store) ListWatches(ctx context.Context, chatID int64) ([]Watch, error) {
-	return s.queryWatches(ctx, `SELECT chat_id, address, label FROM watches WHERE chat_id = ? ORDER BY created_at, address`, chatID)
+	return s.queryWatches(ctx, `SELECT chat_id, address, label, created_at FROM watches WHERE chat_id = ? ORDER BY created_at, address`, chatID)
 }
 
 func (s *Store) CountWatches(ctx context.Context, chatID int64) (int, error) {
@@ -116,7 +123,7 @@ func (s *Store) WatchersOf(ctx context.Context, addresses map[string]struct{}) (
 	// Transactions touch tens of accounts and we watch a handful, so pull
 	// the (small) watch list and intersect in Go rather than building a
 	// giant IN clause.
-	all, err := s.queryWatches(ctx, `SELECT chat_id, address, label FROM watches ORDER BY chat_id, address`)
+	all, err := s.queryWatches(ctx, `SELECT chat_id, address, label, created_at FROM watches ORDER BY chat_id, address`)
 	if err != nil {
 		return nil, err
 	}
@@ -157,12 +164,75 @@ func (s *Store) queryWatches(ctx context.Context, q string, args ...any) ([]Watc
 	var out []Watch
 	for rows.Next() {
 		var w Watch
-		if err := rows.Scan(&w.ChatID, &w.Address, &w.Label); err != nil {
+		var created int64
+		if err := rows.Scan(&w.ChatID, &w.Address, &w.Label, &created); err != nil {
 			return nil, err
 		}
+		w.CreatedAt = time.Unix(created, 0)
 		out = append(out, w)
 	}
 	return out, rows.Err()
+}
+
+// CountAddresses returns how many distinct addresses are watched overall.
+func (s *Store) CountAddresses(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT address) FROM watches`).Scan(&n)
+	return n, err
+}
+
+// AddressWatched reports whether any chat watches addr.
+func (s *Store) AddressWatched(ctx context.Context, addr string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM watches WHERE address = ?`, addr).Scan(&n)
+	return n > 0, err
+}
+
+// ExpireWatches deletes watches created before cutoff and returns them, so
+// the caller can tell each chat.
+func (s *Store) ExpireWatches(ctx context.Context, cutoff time.Time) ([]Watch, error) {
+	ws, err := s.queryWatches(ctx,
+		`SELECT chat_id, address, label, created_at FROM watches WHERE created_at < ? ORDER BY chat_id`, cutoff.Unix())
+	if err != nil || len(ws) == 0 {
+		return nil, err
+	}
+	_, err = s.db.ExecContext(ctx, `DELETE FROM watches WHERE created_at < ?`, cutoff.Unix())
+	return ws, err
+}
+
+// RemoveAddress deletes every chat's watch on addr and returns them.
+func (s *Store) RemoveAddress(ctx context.Context, addr string) ([]Watch, error) {
+	ws, err := s.queryWatches(ctx,
+		`SELECT chat_id, address, label, created_at FROM watches WHERE address = ? ORDER BY chat_id`, addr)
+	if err != nil || len(ws) == 0 {
+		return nil, err
+	}
+	_, err = s.db.ExecContext(ctx, `DELETE FROM watches WHERE address = ?`, addr)
+	return ws, err
+}
+
+// Block refuses new watches on addr until the given time.
+func (s *Store) Block(ctx context.Context, addr string, until time.Time, reason string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO blocked (address, until, reason) VALUES (?, ?, ?)
+		 ON CONFLICT(address) DO UPDATE SET until = excluded.until, reason = excluded.reason`,
+		addr, until.Unix(), reason)
+	return err
+}
+
+// BlockedUntil returns when the block on addr ends (possibly in the past),
+// or the zero time if addr was never blocked.
+func (s *Store) BlockedUntil(ctx context.Context, addr string) (time.Time, string, error) {
+	var until int64
+	var reason string
+	err := s.db.QueryRowContext(ctx, `SELECT until, reason FROM blocked WHERE address = ?`, addr).Scan(&until, &reason)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, "", nil
+	}
+	if err != nil {
+		return time.Time{}, "", err
+	}
+	return time.Unix(until, 0), reason, nil
 }
 
 // MarkSeen records a signature and reports whether it was new. This is the

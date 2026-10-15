@@ -44,8 +44,8 @@ func (c *Client) TokenMetadata(ctx context.Context, mints []string) (map[string]
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	u := strings.TrimRight(c.RPCURL, "/") + "/?api-key=" + url.QueryEscape(c.APIKey)
-	if err := c.send(ctx, "POST", u, req, &resp); err != nil {
+	c.count("das")
+	if err := c.send(ctx, "POST", c.rpcURL(), req, &resp); err != nil {
 		return nil, err
 	}
 	if resp.Error != nil {
@@ -67,4 +67,53 @@ func (c *Client) TokenMetadata(ctx context.Context, mints []string) (map[string]
 		}
 	}
 	return out, nil
+}
+
+func (c *Client) rpcURL() string {
+	return strings.TrimRight(c.RPCURL, "/") + "/?api-key=" + url.QueryEscape(c.APIKey)
+}
+
+// AccountInfo is the part of getAccountInfo solwatch needs to decide whether
+// an address is a wallet.
+type AccountInfo struct {
+	Exists     bool
+	Executable bool
+	Owner      string
+}
+
+// GetAccountInfo fetches an account's owner and executable flag without
+// its data (dataSlice length 0), so it's one cheap RPC call.
+func (c *Client) GetAccountInfo(ctx context.Context, address string) (*AccountInfo, error) {
+	req := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "solwatch",
+		"method":  "getAccountInfo",
+		"params": []any{address, map[string]any{
+			"encoding":   "base64",
+			"dataSlice":  map[string]int{"offset": 0, "length": 0},
+			"commitment": "confirmed",
+		}},
+	}
+	var resp struct {
+		Result *struct {
+			Value *struct {
+				Executable bool   `json:"executable"`
+				Owner      string `json:"owner"`
+			} `json:"value"`
+		} `json:"result"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	c.count("rpc")
+	if err := c.send(ctx, "POST", c.rpcURL(), req, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Error != nil {
+		return nil, &APIError{Status: 200, Body: c.redact(resp.Error.Message)}
+	}
+	if resp.Result == nil || resp.Result.Value == nil {
+		return &AccountInfo{}, nil // never funded: a valid, empty wallet
+	}
+	return &AccountInfo{Exists: true, Executable: resp.Result.Value.Executable, Owner: resp.Result.Value.Owner}, nil
 }

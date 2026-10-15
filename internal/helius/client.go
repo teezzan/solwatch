@@ -28,6 +28,10 @@ type Client struct {
 	APIBase string // webhook management API, default DefaultAPIBase
 	RPCURL  string // JSON-RPC endpoint for DAS, default DefaultRPCURL
 	HTTP    *http.Client
+	// OnCall, if set, is told about every billable call: "webhook_op"
+	// (create/update/delete, 100 credits), "webhook_read", "das" (10) and
+	// "rpc" (1). Used for the usage counter in the logs.
+	OnCall func(kind string)
 }
 
 func NewClient(apiKey string) *Client {
@@ -102,6 +106,11 @@ func (c *Client) DeleteWebhook(ctx context.Context, id string) error {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
+	if method == http.MethodGet {
+		c.count("webhook_read")
+	} else {
+		c.count("webhook_op")
+	}
 	u := strings.TrimRight(c.APIBase, "/") + path + "?api-key=" + url.QueryEscape(c.APIKey)
 	return c.send(ctx, method, u, in, out)
 }
@@ -170,4 +179,10 @@ func (c *Client) redact(s string) string {
 		return s
 	}
 	return strings.ReplaceAll(s, c.APIKey, "REDACTED")
+}
+
+func (c *Client) count(kind string) {
+	if c.OnCall != nil {
+		c.OnCall(kind)
+	}
 }

@@ -102,3 +102,50 @@ func TestKVAndSymbols(t *testing.T) {
 		t.Fatalf("Symbols = %v", got)
 	}
 }
+
+func TestGuardrailQueries(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	s.AddWatch(ctx, Watch{ChatID: 1, Address: "A", Label: "a"})
+	s.AddWatch(ctx, Watch{ChatID: 2, Address: "A"})
+	s.AddWatch(ctx, Watch{ChatID: 2, Address: "B"})
+
+	if n, _ := s.CountAddresses(ctx); n != 2 {
+		t.Errorf("CountAddresses = %d, want 2", n)
+	}
+	if ok, _ := s.AddressWatched(ctx, "B"); !ok {
+		t.Error("B should be watched")
+	}
+
+	// Nothing is older than an hour ago.
+	if ws, _ := s.ExpireWatches(ctx, time.Now().Add(-time.Hour)); len(ws) != 0 {
+		t.Errorf("expired too early: %+v", ws)
+	}
+
+	gone, err := s.RemoveAddress(ctx, "A")
+	if err != nil || len(gone) != 2 {
+		t.Fatalf("RemoveAddress = %+v, %v", gone, err)
+	}
+	if ok, _ := s.AddressWatched(ctx, "A"); ok {
+		t.Error("A still watched after RemoveAddress")
+	}
+
+	// Everything is older than an hour from now.
+	ws, _ := s.ExpireWatches(ctx, time.Now().Add(time.Hour))
+	if len(ws) != 1 || ws[0].Address != "B" || ws[0].CreatedAt.IsZero() {
+		t.Errorf("ExpireWatches = %+v", ws)
+	}
+
+	if until, _, _ := s.BlockedUntil(ctx, "A"); !until.IsZero() {
+		t.Error("A blocked before Block")
+	}
+	s.Block(ctx, "A", time.Now().Add(time.Hour), "hot")
+	if until, reason, _ := s.BlockedUntil(ctx, "A"); until.IsZero() || reason != "hot" {
+		t.Errorf("BlockedUntil = %v %q", until, reason)
+	}
+	past := time.Now().Add(-time.Hour).Truncate(time.Second)
+	s.Block(ctx, "A", past, "old")
+	if until, _, _ := s.BlockedUntil(ctx, "A"); !until.Equal(past) {
+		t.Errorf("BlockedUntil = %v, want %v", until, past)
+	}
+}
