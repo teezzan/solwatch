@@ -415,17 +415,18 @@ func commas(s string) string {
 }
 
 var venues = map[string]string{
-	"JUPITER":    "Jupiter",
-	"RAYDIUM":    "Raydium",
-	"ORCA":       "Orca",
-	"METEORA":    "Meteora",
-	"PUMP_FUN":   "Pump.fun",
-	"PUMP_AMM":   "PumpSwap",
-	"DFLOW":      "DFlow",
-	"PHOENIX":    "Phoenix",
-	"OPENBOOK":   "OpenBook",
-	"MAGIC_EDEN": "Magic Eden",
-	"TENSOR":     "Tensor",
+	"JUPITER":        "Jupiter",
+	"RAYDIUM":        "Raydium",
+	"ORCA":           "Orca",
+	"METEORA":        "Meteora",
+	"PUMP_FUN":       "Pump.fun",
+	"PUMP_AMM":       "PumpSwap",
+	"DFLOW":          "DFlow",
+	"PHOENIX":        "Phoenix",
+	"OPENBOOK":       "OpenBook",
+	"MAGIC_EDEN":     "Magic Eden",
+	"TENSOR":         "Tensor",
+	"OKX_DEX_ROUTER": "OKX DEX",
 }
 
 // venueSuffix returns " on Jupiter" etc. Plumbing programs (System, SPL
