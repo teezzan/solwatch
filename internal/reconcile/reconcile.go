@@ -49,6 +49,10 @@ type Reconciler struct {
 	WebhookType string // "enhanced" (mainnet) or "enhancedDevnet"
 	Debounce    time.Duration
 	Log         *slog.Logger
+	// Paused, if set and true, makes the desired address list empty, which
+	// deletes the webhook. Used by the daily event budget: as long as the
+	// webhook exists, Helius bills for every event.
+	Paused func() bool
 
 	kick chan struct{}
 }
@@ -87,6 +91,8 @@ func (r *Reconciler) Run(ctx context.Context) {
 		case <-r.kick:
 		}
 		// Debounce: let a burst of /watch commands settle into one API call.
+		// Every sync waits this long after the previous one finished, so it
+		// also caps webhook edits (100 credits each) at one per Debounce.
 		select {
 		case <-ctx.Done():
 			return
@@ -111,6 +117,9 @@ func (r *Reconciler) Sync(ctx context.Context) error {
 	addrs, err := r.State.Addresses(ctx)
 	if err != nil {
 		return err
+	}
+	if r.Paused != nil && r.Paused() {
+		addrs = nil
 	}
 	id, err := r.State.Get(ctx, keyWebhookID)
 	if err != nil {

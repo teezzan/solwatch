@@ -11,7 +11,7 @@ import (
 func TestCounterRollsOverDaily(t *testing.T) {
 	var buf bytes.Buffer
 	now := time.Date(2026, 10, 15, 23, 59, 0, 0, time.UTC)
-	c := &Counter{Log: slog.New(slog.NewTextHandler(&buf, nil)), Now: func() time.Time { return now }}
+	c := &Counter{Logger: slog.New(slog.NewTextHandler(&buf, nil)), Now: func() time.Time { return now }}
 
 	c.Add("webhook_event", 40)
 	c.Add("webhook_op", 2)
@@ -23,7 +23,7 @@ func TestCounterRollsOverDaily(t *testing.T) {
 
 	now = now.Add(2 * time.Minute) // next UTC day
 	c.Add("webhook_event", 1)
-	if !strings.Contains(buf.String(), "usage: day closed") || !strings.Contains(buf.String(), "est_credits=270") {
+	if !strings.Contains(buf.String(), "daily usage summary") || !strings.Contains(buf.String(), "est_credits=270") {
 		t.Errorf("rollover log missing:\n%s", buf.String())
 	}
 	day, counts, _ = c.Snapshot()

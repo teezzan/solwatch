@@ -194,3 +194,28 @@ func TestEmptyStateDeletesLeftoverWebhook(t *testing.T) {
 		t.Errorf("stale id kept: %q", st.kv[keyWebhookID])
 	}
 }
+
+func TestPausedDeletesThenRestores(t *testing.T) {
+	ctx := context.Background()
+	r, api, st := setup()
+	paused := false
+	r.Paused = func() bool { return paused }
+	st.addrs["A"] = true
+	r.Sync(ctx)
+	if len(api.hooks) != 1 {
+		t.Fatalf("hooks = %v", api.hooks)
+	}
+	paused = true
+	r.Sync(ctx)
+	if len(api.hooks) != 0 {
+		t.Fatalf("webhook kept while paused: %v", api.hooks)
+	}
+	if !st.addrs["A"] {
+		t.Fatal("pausing must not drop watches")
+	}
+	paused = false
+	r.Sync(ctx)
+	if len(api.hooks) != 1 {
+		t.Fatalf("webhook not restored after resume: %v", api.hooks)
+	}
+}

@@ -36,6 +36,7 @@ type Store interface {
 	RemoveAddress(ctx context.Context, addr string) ([]store.Watch, error)
 	Block(ctx context.Context, addr string, until time.Time, reason string) error
 	BlockedUntil(ctx context.Context, addr string) (time.Time, string, error)
+	ChatsWithWatches(ctx context.Context) ([]int64, error)
 }
 
 // Accounts looks up an address on chain (Helius getAccountInfo).
@@ -53,6 +54,7 @@ type Limits struct {
 	HotPerMinute      int           // shown in help; enforced by pipeline.Breaker
 	HotBlock          time.Duration // how long a hot address stays blocked
 	DigestInterval    time.Duration // shown in help; enforced by notify.Digest
+	DailyEventBudget  int64         // shown in help; enforced by budget.Budget
 	RepoURL           string
 	WriteupURL        string
 }
@@ -65,6 +67,7 @@ type Bot struct {
 	Limits   Limits
 	Log      *slog.Logger
 	Now      func() time.Time
+	Paused   func() bool // daily event budget spent
 
 	rl rateLimiter
 }
@@ -116,6 +119,9 @@ func (b *Bot) Help() string {
 	}
 	if l.WalletsOnly {
 		sb.WriteString("• wallets only: programs, token mints and pools are refused\n")
+	}
+	if l.DailyEventBudget > 0 {
+		fmt.Fprintf(&sb, "• after %d transactions in a day (all chats together), alerts pause until 00:00 UTC\n", l.DailyEventBudget)
 	}
 	if l.RepoURL != "" || l.WriteupURL != "" {
 		sb.WriteString("\n")
@@ -273,6 +279,9 @@ func (b *Bot) watch(ctx context.Context, chatID int64, args []string) string {
 	if b.Limits.TTL > 0 {
 		reply += fmt.Sprintf(" this watch expires in %s.", human(b.Limits.TTL))
 	}
+	if b.Paused != nil && b.Paused() {
+		reply += "\n\n" + pausedNote
+	}
 	return reply
 }
 
@@ -383,6 +392,34 @@ func (b *Bot) Evict(ctx context.Context, addr string, perMinute int) {
 	}
 	if len(gone) > 0 {
 		b.changed()
+	}
+}
+
+const pausedNote = "⏸ demo daily budget reached, resumes 00:00 UTC. your watches are kept."
+
+// BudgetPaused tells every chat with watches that alerts are paused for
+// the rest of the UTC day. Wired to budget.Budget.OnPause.
+func (b *Bot) BudgetPaused(ctx context.Context) {
+	b.broadcast(ctx, pausedNote)
+	b.log().Warn("daily event budget reached: alerts paused until 00:00 UTC")
+	b.changed() // reconciler sees Paused() and deletes the webhook
+}
+
+// BudgetResumed tells chats alerts are back. Wired to OnResume.
+func (b *Bot) BudgetResumed(ctx context.Context) {
+	b.broadcast(ctx, "▶️ new UTC day: the demo budget has reset and alerts are back on.")
+	b.log().Info("daily event budget reset: alerts resumed")
+	b.changed() // recreate the webhook with the current watch list
+}
+
+func (b *Bot) broadcast(ctx context.Context, text string) {
+	chats, err := b.Store.ChatsWithWatches(ctx)
+	if err != nil {
+		b.log().Error("list chats", "err", err)
+		return
+	}
+	for _, c := range chats {
+		b.note(ctx, c, text)
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/teezzan/solwatch/internal/bot"
+	"github.com/teezzan/solwatch/internal/budget"
 	"github.com/teezzan/solwatch/internal/helius"
 	"github.com/teezzan/solwatch/internal/notify"
 	"github.com/teezzan/solwatch/internal/pipeline"
@@ -49,6 +50,8 @@ type config struct {
 	DigestInterval   time.Duration
 	DigestMaxLines   int
 	UsageLogInterval time.Duration
+	WebhookDebounce  time.Duration
+	DailyEventBudget int64
 	Limits           bot.Limits
 }
 
@@ -87,7 +90,7 @@ func run(cfg config, log *slog.Logger) error {
 		}
 	}
 
-	counter := &usage.Counter{Log: log.With("component", "usage")}
+	counter := &usage.Counter{Logger: log.With("component", "usage")}
 	hc := helius.NewClient(cfg.HeliusAPIKey)
 	hc.OnCall = func(kind string) { counter.Add(kind, 1) }
 	rec := &reconcile.Reconciler{
@@ -96,7 +99,7 @@ func run(cfg config, log *slog.Logger) error {
 		WebhookURL:  strings.TrimRight(cfg.PublicURL, "/") + webhookPath,
 		AuthHeader:  cfg.WebhookSecret,
 		WebhookType: cfg.WebhookType,
-		Debounce:    2 * time.Second,
+		Debounce:    cfg.WebhookDebounce,
 		Log:         log.With("component", "reconcile"),
 	}
 
@@ -125,11 +128,22 @@ func run(cfg config, log *slog.Logger) error {
 		Limits:   cfg.Limits,
 		Log:      log.With("component", "bot"),
 	}
+	bud := &budget.Budget{Limit: cfg.DailyEventBudget, KV: st, OnPause: b.BudgetPaused, OnResume: b.BudgetResumed}
+	if err := bud.Load(ctx); err != nil {
+		return err
+	}
+	if day, n := bud.Count(); n > 0 {
+		log.Info("daily event budget restored", "day", day, "events", n, "limit", cfg.DailyEventBudget, "paused", bud.Paused())
+	}
+	b.Paused = bud.Paused
+	rec.Paused = bud.Paused
+
 	queue := make(chan helius.EnhancedTransaction, 1024)
 	proc := &pipeline.Processor{
 		Store: st, Tokens: hc, Notifier: notifier, Log: log.With("component", "pipeline"),
 		Breaker: &pipeline.Breaker{Max: cfg.Limits.HotPerMinute},
 		OnHot:   b.Evict,
+		Paused:  bud.Paused,
 	}
 
 	srv := &http.Server{
@@ -139,7 +153,10 @@ func run(cfg config, log *slog.Logger) error {
 			Queue:      queue,
 			CaptureDir: cfg.CaptureDir,
 			Log:        log.With("component", "http"),
-			OnEvents:   func(n int) { counter.Add("webhook_event", n) },
+			OnEvents: func(n int) {
+				counter.Add("webhook_event", n)
+				bud.Add(context.WithoutCancel(ctx), n)
+			},
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -152,6 +169,7 @@ func run(cfg config, log *slog.Logger) error {
 	go rec.Run(ctx)
 	go prune(ctx, st, log)
 	go counter.Run(ctx, cfg.UsageLogInterval)
+	go bud.Run(ctx, time.Minute)
 	if cfg.Limits.TTL > 0 {
 		go b.RunExpiry(ctx, time.Minute)
 	}
@@ -196,6 +214,7 @@ func run(cfg config, log *slog.Logger) error {
 			log.Error("webhook teardown failed", "err", err)
 		}
 	}
+	counter.Log("usage at shutdown")
 	log.Info("bye")
 	return nil
 }
@@ -265,18 +284,21 @@ func loadConfig() (config, error) {
 	c.DigestInterval = p.duration("DIGEST_INTERVAL", "60s")
 	c.DigestMaxLines = p.int("DIGEST_MAX_LINES", "5")
 	c.UsageLogInterval = p.duration("USAGE_LOG_INTERVAL", "1h")
+	c.WebhookDebounce = p.duration("WEBHOOK_SYNC_DEBOUNCE", "30s")
+	c.DailyEventBudget = int64(p.int("DAILY_EVENT_BUDGET", "25000"))
 	c.Limits = bot.Limits{
 		MaxPerChat:        p.int("MAX_WATCHES_PER_CHAT", "3"),
-		MaxAddresses:      p.int("MAX_WATCHED_ADDRESSES", "50"),
+		MaxAddresses:      p.int("MAX_WATCHED_ADDRESSES", "20"),
 		TTL:               p.duration("WATCH_TTL", "24h"),
 		CommandsPerMinute: p.int("COMMANDS_PER_MINUTE", "10"),
 		WalletsOnly:       p.bool("WALLETS_ONLY", "true"),
-		HotPerMinute:      p.int("HOT_ADDRESS_MAX_PER_MIN", "30"),
+		HotPerMinute:      p.int("HOT_ADDRESS_MAX_PER_MIN", "10"),
 		HotBlock:          p.duration("HOT_ADDRESS_BLOCK", "24h"),
 		DigestInterval:    c.DigestInterval,
 		RepoURL:           envOr("REPO_URL", "https://github.com/teezzan/solwatch"),
 		WriteupURL:        envOr("WRITEUP_URL", "https://blog.taiwo.dev/posts/real-time-solana-wallet-alerts-in-go-with-helius-webhooks/"),
 	}
+	c.Limits.DailyEventBudget = c.DailyEventBudget
 	if p.err != nil {
 		return c, p.err
 	}

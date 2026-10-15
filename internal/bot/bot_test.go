@@ -203,7 +203,8 @@ func TestWatchesExpire(t *testing.T) {
 	changes := 0
 	b.OnChange = func() { changes++ }
 	b.Handle(ctx, 1, "/watch "+w1+" jup trader")
-	if got := b.Handle(ctx, 1, "/list"); !strings.Contains(got, "(expires in 23h59m)") {
+	// created_at is stored in whole seconds, so this is 24h or 23h59m.
+	if got := b.Handle(ctx, 1, "/list"); !strings.Contains(got, "(expires in 24h)") && !strings.Contains(got, "(expires in 23h59m)") {
 		t.Errorf("/list: %q", got)
 	}
 
@@ -277,5 +278,41 @@ func TestHuman(t *testing.T) {
 		if got := human(d); got != want {
 			t.Errorf("human(%v) = %q, want %q", d, got, want)
 		}
+	}
+}
+
+func TestBudgetPauseBroadcasts(t *testing.T) {
+	ctx := context.Background()
+	b, _, n, _ := newDemoBot(t)
+	b.Limits.DailyEventBudget = 25000
+	changes := 0
+	b.OnChange = func() { changes++ }
+	b.Handle(ctx, 1, "/watch "+w1)
+	b.Handle(ctx, 2, "/watch "+w2)
+	changes = 0
+
+	b.BudgetPaused(ctx)
+	for _, chat := range []int64{1, 2} {
+		if len(n.got[chat]) != 1 || !strings.Contains(n.got[chat][0], "demo daily budget reached, resumes 00:00 UTC") {
+			t.Errorf("chat %d: %v", chat, n.got[chat])
+		}
+	}
+	if changes != 1 {
+		t.Errorf("OnChange calls = %d, want 1 (to delete the webhook)", changes)
+	}
+
+	paused := true
+	b.Paused = func() bool { return paused }
+	if got := b.Handle(ctx, 3, "/watch "+w3); !strings.Contains(got, "watching") || !strings.Contains(got, "resumes 00:00 UTC") {
+		t.Errorf("watch while paused: %q", got)
+	}
+	if h := b.Help(); !strings.Contains(h, "after 25000 transactions in a day") {
+		t.Errorf("help: %s", h)
+	}
+
+	paused = false
+	b.BudgetResumed(ctx)
+	if got := n.got[1][len(n.got[1])-1]; !strings.Contains(got, "alerts are back") {
+		t.Errorf("resume note: %q", got)
 	}
 }

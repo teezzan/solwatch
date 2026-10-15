@@ -20,8 +20,8 @@ var Credits = map[string]int64{
 }
 
 type Counter struct {
-	Log *slog.Logger
-	Now func() time.Time // for tests
+	Logger *slog.Logger
+	Now    func() time.Time // for tests
 
 	mu     sync.Mutex
 	day    string
@@ -35,22 +35,28 @@ func (c *Counter) now() time.Time {
 	return time.Now()
 }
 
-// Add records n units of kind (e.g. "webhook_event"). On the first Add of a
-// new UTC day, yesterday's totals are logged and reset.
+// Add records n units of kind (e.g. "webhook_event").
 func (c *Counter) Add(kind string, n int) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	day := c.now().UTC().Format("2006-01-02")
-	if c.day != day {
-		if c.day != "" {
-			c.logLocked("usage: day closed")
-		}
-		c.day, c.counts = day, map[string]int64{}
-	}
+	c.rolloverLocked()
 	c.counts[kind] += int64(n)
+}
+
+// rolloverLocked starts a new UTC day if needed, first logging the daily
+// summary for the day that just ended.
+func (c *Counter) rolloverLocked() {
+	day := c.now().UTC().Format("2006-01-02")
+	if c.day == day {
+		return
+	}
+	if c.day != "" {
+		c.logLocked("daily usage summary")
+	}
+	c.day, c.counts = day, map[string]int64{}
 }
 
 // Snapshot returns today's counts and the estimated credits they cost.
@@ -65,27 +71,36 @@ func (c *Counter) Snapshot() (day string, counts map[string]int64, credits int64
 	return c.day, counts, credits
 }
 
-// Run logs a usage line every interval until ctx ends, and once more on exit.
+// Run logs a usage line every interval, and the daily summary as soon as
+// a UTC day ends (checked every minute), until ctx ends.
 func (c *Counter) Run(ctx context.Context, every time.Duration) {
-	t := time.NewTicker(every)
-	defer t.Stop()
+	logT := time.NewTicker(every)
+	defer logT.Stop()
+	dayT := time.NewTicker(time.Minute)
+	defer dayT.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			c.mu.Lock()
-			c.logLocked("usage: shutdown")
-			c.mu.Unlock()
 			return
-		case <-t.C:
+		case <-dayT.C:
 			c.mu.Lock()
-			c.logLocked("usage")
+			c.rolloverLocked()
 			c.mu.Unlock()
+		case <-logT.C:
+			c.Log("usage")
 		}
 	}
 }
 
+// Log writes today's counts with the given message, e.g. at shutdown.
+func (c *Counter) Log(msg string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.logLocked(msg)
+}
+
 func (c *Counter) logLocked(msg string) {
-	if c.Log == nil {
+	if c.Logger == nil {
 		return
 	}
 	keys := make([]string, 0, len(c.counts))
@@ -100,5 +115,5 @@ func (c *Counter) logLocked(msg string) {
 		credits += c.counts[k] * Credits[k]
 	}
 	attrs = append(attrs, "est_credits", credits)
-	c.Log.Info(msg, attrs...)
+	c.Logger.Info(msg, attrs...)
 }
