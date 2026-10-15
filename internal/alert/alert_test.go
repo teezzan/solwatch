@@ -154,3 +154,34 @@ func TestBuildDefaultsLabelToShortAddress(t *testing.T) {
 		t.Errorf("Text() = %q", got)
 	}
 }
+
+func TestSwapLegsSumsRepeatedMint(t *testing.T) {
+	const mint = "NEXa1111111111111111111111111111111111111111"
+	tx := &helius.EnhancedTransaction{
+		Source: "JUPITER",
+		Events: helius.Events{Swap: &helius.SwapEvent{
+			TokenInputs: []helius.TokenAmount{
+				{UserAccount: trader1, Mint: mint, RawTokenAmount: helius.RawTokenAmount{TokenAmount: "106860320000", Decimals: 6}},
+				{UserAccount: trader1, Mint: mint, RawTokenAmount: helius.RawTokenAmount{TokenAmount: "26641800", Decimals: 6}},
+			},
+			NativeOutput: &helius.NativeAmount{Account: trader1, Amount: "24990"},
+		}},
+	}
+	got := Summarize(tx, trader1, Symbols{mint: "NEX"})
+	if want := "swapped 106,886.96 NEX → 0.00002499 SOL on Jupiter"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestKindOf(t *testing.T) {
+	for summary, want := range map[string]string{
+		"swapped 1 SOL → 2 USDC":    "swap",
+		"sent 0.1 SOL to abcd…wxyz": "send",
+		"received 0.0233 SOL":       "receive",
+		"sold Fox #7637 to x":       "other",
+	} {
+		if got := KindOf(summary); got != want {
+			t.Errorf("KindOf(%q) = %q, want %q", summary, got, want)
+		}
+	}
+}

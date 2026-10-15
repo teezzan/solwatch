@@ -42,6 +42,7 @@ type Alert struct {
 	Address   string
 	Label     string
 	Summary   string // plain text, e.g. "swapped 2 SOL → 310 USDC on Jupiter"
+	Kind      string // "swap", "send", "receive" or "other", for digests
 }
 
 // Text renders the alert as plain text.
@@ -70,12 +71,28 @@ func Build(tx *helius.EnhancedTransaction, watched, label string, sym Symbols) A
 	if label == "" {
 		label = Short(watched)
 	}
+	summary := Summarize(tx, watched, sym)
 	return Alert{
 		Signature: tx.Signature,
 		Address:   watched,
 		Label:     label,
-		Summary:   Summarize(tx, watched, sym),
+		Summary:   summary,
+		Kind:      KindOf(summary),
 	}
+}
+
+// KindOf buckets a summary by its leading verb, for digest headers like
+// "4 swaps, 2 sends".
+func KindOf(summary string) string {
+	switch {
+	case strings.HasPrefix(summary, "swapped "):
+		return "swap"
+	case strings.HasPrefix(summary, "sent "):
+		return "send"
+	case strings.HasPrefix(summary, "received "):
+		return "receive"
+	}
+	return "other"
 }
 
 // Mints lists every token mint referenced by tx, so the caller can resolve
@@ -177,24 +194,51 @@ func describeFlows(txType string, f flows, sent, recv []string, venue string) st
 }
 
 func swapLegs(s *helius.SwapEvent, watched string, sym Symbols) (in, out string) {
-	var ins, outs []string
+	// Sum per mint: an event can list the same mint twice (seen live as
+	// "swapped 106,860.32 NEX Ai + 26.6418 NEX Ai → ..."), so key by mint
+	// and keep first-seen order.
+	type leg struct {
+		order []string
+		sum   map[string]float64
+	}
+	add := func(l *leg, key string, v float64) {
+		if l.sum == nil {
+			l.sum = map[string]float64{}
+		}
+		if _, ok := l.sum[key]; !ok {
+			l.order = append(l.order, key)
+		}
+		l.sum[key] += v
+	}
+	var ins, outs leg
 	if s.NativeInput != nil && s.NativeInput.Account == watched {
-		ins = append(ins, Amount(rawToFloat(s.NativeInput.Amount, 9))+" SOL")
+		add(&ins, solKey, rawToFloat(s.NativeInput.Amount, 9))
 	}
 	for _, t := range s.TokenInputs {
 		if t.UserAccount == watched {
-			ins = append(ins, Amount(rawToFloat(t.RawTokenAmount.TokenAmount, t.RawTokenAmount.Decimals))+" "+Symbol(t.Mint, sym))
+			add(&ins, t.Mint, rawToFloat(t.RawTokenAmount.TokenAmount, t.RawTokenAmount.Decimals))
 		}
 	}
 	if s.NativeOutput != nil && s.NativeOutput.Account == watched {
-		outs = append(outs, Amount(rawToFloat(s.NativeOutput.Amount, 9))+" SOL")
+		add(&outs, solKey, rawToFloat(s.NativeOutput.Amount, 9))
 	}
 	for _, t := range s.TokenOutputs {
 		if t.UserAccount == watched {
-			outs = append(outs, Amount(rawToFloat(t.RawTokenAmount.TokenAmount, t.RawTokenAmount.Decimals))+" "+Symbol(t.Mint, sym))
+			add(&outs, t.Mint, rawToFloat(t.RawTokenAmount.TokenAmount, t.RawTokenAmount.Decimals))
 		}
 	}
-	return strings.Join(ins, " + "), strings.Join(outs, " + ")
+	render := func(l leg) string {
+		parts := make([]string, 0, len(l.order))
+		for _, k := range l.order {
+			name := solKey
+			if k != solKey {
+				name = Symbol(k, sym)
+			}
+			parts = append(parts, Amount(l.sum[k])+" "+name)
+		}
+		return strings.Join(parts, " + ")
+	}
+	return render(ins), render(outs)
 }
 
 type flows struct {
