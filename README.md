@@ -69,6 +69,10 @@ With no `TELEGRAM_BOT_TOKEN`, type commands into the terminal and alerts print t
 To use Telegram, create a bot with [@BotFather](https://t.me/BotFather), put the token in
 `.env`, restart, and send the bot `/watch <address> <label>`.
 
+The Telegram path has been tested live: `/start` and `/watch` from a real chat, and 20 swap
+alerts delivered with `sendMessage` returning ok, 2.7–4.3s after block time. `/list`
+and `/unwatch` have only been exercised in console mode and unit tests so far.
+
 ### Docker
 
 ```sh
