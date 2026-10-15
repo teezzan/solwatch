@@ -1,5 +1,7 @@
 # Real-time Solana wallet alerts in Go with Helius webhooks
 
+**Try it:** Message [@bc_helios_alertbot](https://t.me/bc_helios_alertbot) on Telegram — demo limits apply.
+
 I've built Telegram crypto bots before. Every one of them had the same loop at its
 core: wake up, ask an RPC node "anything new for this address?", sleep, repeat. It
 works until you're watching fifty wallets, your provider starts returning 429s, and

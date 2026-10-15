@@ -2,6 +2,8 @@
 
 A Telegram bot that pings you when a Solana wallet you care about does something.
 
+**Try it:** Message [@bc_helios_alertbot](https://t.me/bc_helios_alertbot) on Telegram — demo limits apply.
+
 ```
 /watch 2KNuy5aBQB58YeLRtj3pJWyXHztaf2jqHWnowThanHmZ jup trader
 
@@ -131,18 +133,26 @@ precedence over `.env`.
 Every webhook event costs a credit, so a public instance needs limits. The defaults
 are what the hosted demo runs with. Set a number to `0` to turn that limit off.
 
+Worst case with these defaults: 20 wallets just under the 10/min breaker could produce
+about 290k events a day, which would use up a free plan's 1M monthly credits in under
+four days. `DAILY_EVENT_BUDGET` is the hard stop: 25,000 events a day is about 750k a
+month. Token metadata is cached in SQLite, including mints DAS has no symbol for, so
+each mint costs at most one DAS lookup.
+
 | Variable | Default | Description |
 |---|---|---|
 | `DIGEST_INTERVAL` | `60s` | Buffer alerts per chat and wallet and send one digest per interval. A single alert still goes out as one normal line. `0` sends every alert immediately. Buffered alerts are flushed on shutdown. |
 | `DIGEST_MAX_LINES` | `5` | Transactions listed in a digest before "+N more". |
 | `MAX_WATCHES_PER_CHAT` | `3` | Wallets one chat can watch. |
-| `MAX_WATCHED_ADDRESSES` | `50` | Distinct wallets across all chats. This is also the size of the Helius webhook's address list. |
+| `MAX_WATCHED_ADDRESSES` | `20` | Distinct wallets across all chats. This is also the size of the Helius webhook's address list. |
 | `WATCH_TTL` | `24h` | Watches expire after this, and the chat gets a note saying how to re-add it. |
-| `HOT_ADDRESS_MAX_PER_MIN` | `30` | If a watched wallet produces more events than this in a minute, it's unwatched for every chat and they're told why. |
+| `HOT_ADDRESS_MAX_PER_MIN` | `10` | If a watched wallet produces more events than this in a minute, it's unwatched for every chat and they're told why. |
 | `HOT_ADDRESS_BLOCK` | `24h` | How long an evicted hot wallet can't be watched again. |
 | `WALLETS_ONLY` | `true` | `/watch` calls `getAccountInfo` (1 credit). Programs (executable accounts) and sysvars are always refused. With this on, so is anything not owned by the System Program: token mints, pools and other program accounts, which are the busiest addresses on chain. |
 | `COMMANDS_PER_MINUTE` | `10` | Per-chat command rate limit. The first command over the limit gets a warning; later ones are ignored until the minute is up. |
-| `USAGE_LOG_INTERVAL` | `1h` | How often to log a `usage` line with today's (UTC) webhook events, webhook API calls, DAS and RPC calls, and an estimated credit total. |
+| `DAILY_EVENT_BUDGET` | `25000` | Hard cap on webhook events per UTC day, across all chats. When it's reached, alerts stop, every chat with watches is told ("demo daily budget reached, resumes 00:00 UTC"), and the webhook is deleted so Helius stops billing. At 00:00 UTC it's recreated from the kept watches. The count is stored in SQLite, so a restart doesn't reset it. |
+| `WEBHOOK_SYNC_DEBOUNCE` | `30s` | Watch-list changes are batched into at most one webhook create/edit/delete (100 credits each) per this interval. |
+| `USAGE_LOG_INTERVAL` | `1h` | How often to log a `usage` line with today's (UTC) webhook events, webhook API calls, DAS and RPC calls, and an estimated credit total. A `daily usage summary` line is also logged when each UTC day ends. |
 | `REPO_URL`, `WRITEUP_URL` | this repo, the blog post | Links shown in `/start`. |
 
 ## Helius limits that shape the design
