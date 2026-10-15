@@ -28,24 +28,28 @@ import (
 	"github.com/teezzan/solwatch/internal/server"
 	"github.com/teezzan/solwatch/internal/store"
 	"github.com/teezzan/solwatch/internal/telegram"
+	"github.com/teezzan/solwatch/internal/usage"
 )
 
 const webhookPath = "/webhooks/helius"
 
 type config struct {
-	HeliusAPIKey      string
-	PublicURL         string
-	WebhookSecret     string
-	TelegramToken     string
-	ListenAddr        string
-	DBPath            string
-	Explorer          string
-	MaxWatchesPerChat int
-	ConsoleChatID     int64
-	CaptureDir        string
-	DeleteOnExit      bool
-	WebhookType       string
-	LogLevel          slog.Level
+	HeliusAPIKey     string
+	PublicURL        string
+	WebhookSecret    string
+	TelegramToken    string
+	ListenAddr       string
+	DBPath           string
+	Explorer         string
+	ConsoleChatID    int64
+	CaptureDir       string
+	DeleteOnExit     bool
+	WebhookType      string
+	LogLevel         slog.Level
+	DigestInterval   time.Duration
+	DigestMaxLines   int
+	UsageLogInterval time.Duration
+	Limits           bot.Limits
 }
 
 func main() {
@@ -83,7 +87,9 @@ func run(cfg config, log *slog.Logger) error {
 		}
 	}
 
+	counter := &usage.Counter{Log: log.With("component", "usage")}
 	hc := helius.NewClient(cfg.HeliusAPIKey)
+	hc.OnCall = func(kind string) { counter.Add(kind, 1) }
 	rec := &reconcile.Reconciler{
 		API:         hc,
 		State:       st,
@@ -94,19 +100,37 @@ func run(cfg config, log *slog.Logger) error {
 		Log:         log.With("component", "reconcile"),
 	}
 
-	var notifier notify.Notifier
+	var sink notify.Sink
 	var tg *telegram.Client
 	if cfg.TelegramToken != "" {
 		tg = telegram.New(cfg.TelegramToken)
-		notifier = &notify.Telegram{Client: tg, Explorer: cfg.Explorer}
+		sink = &notify.Telegram{Client: tg}
 	} else {
 		log.Warn("TELEGRAM_BOT_TOKEN not set: reading commands from stdin and printing alerts to stdout")
-		notifier = &notify.Writer{W: os.Stdout, Explorer: cfg.Explorer}
+		sink = &notify.Writer{W: os.Stdout}
+	}
+	var notifier notify.Notifier = &notify.Immediate{Sink: sink, Explorer: cfg.Explorer}
+	var digest *notify.Digest
+	if cfg.DigestInterval > 0 {
+		digest = &notify.Digest{Sink: sink, Explorer: cfg.Explorer, Interval: cfg.DigestInterval,
+			MaxLines: cfg.DigestMaxLines, Log: log.With("component", "digest")}
+		notifier = digest
 	}
 
+	b := &bot.Bot{
+		Store:    st,
+		Accounts: hc,
+		Notes:    sink,
+		OnChange: rec.Trigger,
+		Limits:   cfg.Limits,
+		Log:      log.With("component", "bot"),
+	}
 	queue := make(chan helius.EnhancedTransaction, 1024)
-	proc := &pipeline.Processor{Store: st, Tokens: hc, Notifier: notifier, Log: log.With("component", "pipeline")}
-	b := &bot.Bot{Store: st, OnChange: rec.Trigger, MaxPerChat: cfg.MaxWatchesPerChat}
+	proc := &pipeline.Processor{
+		Store: st, Tokens: hc, Notifier: notifier, Log: log.With("component", "pipeline"),
+		Breaker: &pipeline.Breaker{Max: cfg.Limits.HotPerMinute},
+		OnHot:   b.Evict,
+	}
 
 	srv := &http.Server{
 		Addr: cfg.ListenAddr,
@@ -115,6 +139,7 @@ func run(cfg config, log *slog.Logger) error {
 			Queue:      queue,
 			CaptureDir: cfg.CaptureDir,
 			Log:        log.With("component", "http"),
+			OnEvents:   func(n int) { counter.Add("webhook_event", n) },
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -126,8 +151,15 @@ func run(cfg config, log *slog.Logger) error {
 
 	go rec.Run(ctx)
 	go prune(ctx, st, log)
+	go counter.Run(ctx, cfg.UsageLogInterval)
+	if cfg.Limits.TTL > 0 {
+		go b.RunExpiry(ctx, time.Minute)
+	}
+	if digest != nil {
+		go digest.Run(ctx)
+	}
 	if tg != nil {
-		go b.RunTelegram(ctx, tg, log.With("component", "telegram"))
+		go b.RunTelegram(ctx, tg)
 	} else {
 		go b.RunConsole(ctx, os.Stdin, os.Stdout, cfg.ConsoleChatID)
 	}
@@ -156,6 +188,9 @@ func run(cfg config, log *slog.Logger) error {
 	}
 	close(queue)
 	procDone.Wait()
+	if digest != nil {
+		digest.Flush(shutCtx) // don't drop alerts buffered for the next digest
+	}
 	if cfg.DeleteOnExit {
 		if err := rec.Teardown(shutCtx); err != nil {
 			log.Error("webhook teardown failed", "err", err)
@@ -226,8 +261,27 @@ func loadConfig() (config, error) {
 		return c, errors.New("EXPLORER_TX_URL must contain %s for the signature")
 	}
 	var err error
-	if c.MaxWatchesPerChat, err = strconv.Atoi(envOr("MAX_WATCHES_PER_CHAT", "25")); err != nil {
-		return c, fmt.Errorf("MAX_WATCHES_PER_CHAT: %w", err)
+	p := envParser{}
+	c.DigestInterval = p.duration("DIGEST_INTERVAL", "60s")
+	c.DigestMaxLines = p.int("DIGEST_MAX_LINES", "5")
+	c.UsageLogInterval = p.duration("USAGE_LOG_INTERVAL", "1h")
+	c.Limits = bot.Limits{
+		MaxPerChat:        p.int("MAX_WATCHES_PER_CHAT", "3"),
+		MaxAddresses:      p.int("MAX_WATCHED_ADDRESSES", "50"),
+		TTL:               p.duration("WATCH_TTL", "24h"),
+		CommandsPerMinute: p.int("COMMANDS_PER_MINUTE", "10"),
+		WalletsOnly:       p.bool("WALLETS_ONLY", "true"),
+		HotPerMinute:      p.int("HOT_ADDRESS_MAX_PER_MIN", "30"),
+		HotBlock:          p.duration("HOT_ADDRESS_BLOCK", "24h"),
+		DigestInterval:    c.DigestInterval,
+		RepoURL:           envOr("REPO_URL", "https://github.com/teezzan/solwatch"),
+		WriteupURL:        envOr("WRITEUP_URL", "https://blog.taiwo.dev/posts/real-time-solana-wallet-alerts-in-go-with-helius-webhooks/"),
+	}
+	if p.err != nil {
+		return c, p.err
+	}
+	if c.UsageLogInterval <= 0 {
+		return c, errors.New("USAGE_LOG_INTERVAL must be positive")
 	}
 	if c.ConsoleChatID, err = strconv.ParseInt(envOr("CONSOLE_CHAT_ID", "1"), 10, 64); err != nil {
 		return c, fmt.Errorf("CONSOLE_CHAT_ID: %w", err)
@@ -276,4 +330,37 @@ func loadEnvFile(path string) error {
 		}
 	}
 	return sc.Err()
+}
+
+// envParser reads typed env vars, keeping the first error.
+type envParser struct{ err error }
+
+func (p *envParser) fail(k string, err error) {
+	if p.err == nil {
+		p.err = fmt.Errorf("%s: %w", k, err)
+	}
+}
+
+func (p *envParser) int(k, def string) int {
+	v, err := strconv.Atoi(envOr(k, def))
+	if err != nil {
+		p.fail(k, err)
+	}
+	return v
+}
+
+func (p *envParser) duration(k, def string) time.Duration {
+	v, err := time.ParseDuration(envOr(k, def))
+	if err != nil {
+		p.fail(k, err)
+	}
+	return v
+}
+
+func (p *envParser) bool(k, def string) bool {
+	v, err := strconv.ParseBool(envOr(k, def))
+	if err != nil {
+		p.fail(k, err)
+	}
+	return v
 }
