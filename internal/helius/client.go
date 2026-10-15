@@ -119,7 +119,12 @@ func (c *Client) send(ctx context.Context, method, u string, in, out any) error 
 	if err != nil {
 		return c.scrub(err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	// Only claim JSON when there is a body. Helius' API answers a bodiless
+	// DELETE that carries Content-Type: application/json with
+	// 400 "Unexpected token 'n', "null" is not valid JSON".
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return c.scrub(err)

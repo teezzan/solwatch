@@ -76,3 +76,21 @@ func TestFailed(t *testing.T) {
 		t.Errorf("Failed(): ok=%v bad=%v", ok.Failed(), bad.Failed())
 	}
 }
+
+func TestDeleteSendsNoContentType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Mimic Helius: a JSON content type with an empty body is a 400.
+		if r.Header.Get("Content-Type") == "application/json" && r.ContentLength == 0 {
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"message":"Unexpected token 'n', \"null\" is not valid JSON"}`)
+			return
+		}
+		io.WriteString(w, `{"message":"Webhook deleted successfully"}`)
+	}))
+	defer srv.Close()
+	c := NewClient(testKey)
+	c.APIBase = srv.URL
+	if err := c.DeleteWebhook(context.Background(), "abc"); err != nil {
+		t.Fatalf("DeleteWebhook: %v", err)
+	}
+}
