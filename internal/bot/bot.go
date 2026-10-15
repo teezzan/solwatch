@@ -101,7 +101,11 @@ func (b *Bot) Handle(ctx context.Context, chatID int64, text string) string {
 
 func (b *Bot) watch(ctx context.Context, chatID int64, args []string) string {
 	if len(args) == 0 {
-		return "usage: /watch <address> [label]"
+		// Telegram turns "/watch" in any message into a tappable link that
+		// sends the bare command, so this reply has to teach, not scold.
+		return "send the address to watch after the command, plus an optional label:\n" +
+			"/watch <address> [label]\n\n" +
+			"e.g. /watch 2KNuy5aBQB58YeLRtj3pJWyXHztaf2jqHWnowThanHmZ jup trader"
 	}
 	addr := args[0]
 	if err := ValidateAddress(addr); err != nil {

@@ -53,7 +53,7 @@ func TestCommands(t *testing.T) {
 		changes        int
 	}{
 		{"/list", "not watching anything", 0},
-		{"/watch", "usage", 0},
+		{"/watch", "e.g. /watch ", 0}, // bare command, e.g. a tapped link
 		{"/watch nope", "doesn't look like a Solana address", 0},
 		{"/watch " + addr + " degen bot", "watching degen bot", 1},
 		{"/watch@solwatch_bot " + addr + " jup trader", "updated label: jup trader", 1}, // relabel: no webhook sync
