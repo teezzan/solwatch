@@ -6,7 +6,7 @@ A Telegram bot that pings you when a Solana wallet you care about does something
 /watch 2KNuy5aBQB58YeLRtj3pJWyXHztaf2jqHWnowThanHmZ jup trader
 
 🔔 jup trader: swapped 0.08221 SOL → 828,678.81 GROK on Jupiter · view tx
-🔔 jup trader: swapped 44,766.34 HELLCAT → 0.1426 SOL on OKX DEX · view tx
+🔔 jup trader: swapped 6,902.46 PERPSPAD → 0.1075 SOL on Jupiter · view tx
 ```
 
 (Those are real alerts from a test run against mainnet.)
