@@ -56,13 +56,14 @@ func TestCommands(t *testing.T) {
 		{"/watch", "usage", 0},
 		{"/watch nope", "doesn't look like a Solana address", 0},
 		{"/watch " + addr + " degen bot", "watching degen bot", 1},
-		{"/watch@solwatch_bot " + addr + " renamed", "updated label: renamed", 1}, // relabel: no webhook sync
+		{"/watch@solwatch_bot " + addr + " jup trader", "updated label: jup trader", 1}, // relabel: no webhook sync
 		{"/watch " + addr2, "watching HhgB…n51F", 2},
 		{"/watch So11111111111111111111111111111111111111112", "limit of 2", 2},
-		{"/list", "renamed - " + addr, 2},
-		{"/unwatch renamed", "stopped watching", 3},
-		{"/unwatch renamed", "not watching", 3},
-		{"/bogus", "unknown command", 3},
+		{"/list", "jup trader - " + addr, 2},
+		{"/unwatch jup", "not watching jup", 2},
+		{"/unwatch jup trader", "stopped watching jup trader", 3}, // multi-word label
+		{"/unwatch " + addr2, "stopped watching", 4},
+		{"/bogus", "unknown command", 4},
 	}
 	for _, s := range steps {
 		got := b.Handle(ctx, 42, s.in)

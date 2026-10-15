@@ -61,18 +61,21 @@ func (b *Bot) Handle(ctx context.Context, chatID int64, text string) string {
 	case "/watch":
 		return b.watch(ctx, chatID, args)
 	case "/unwatch":
-		if len(args) != 1 {
+		if len(args) == 0 {
 			return "usage: /unwatch <address|label>"
 		}
-		ok, err := b.Store.RemoveWatch(ctx, chatID, args[0])
+		// Labels can contain spaces ("/watch <addr> jup trader"), so the
+		// target is the rest of the line, not just the first word.
+		target := strings.Join(args, " ")
+		ok, err := b.Store.RemoveWatch(ctx, chatID, target)
 		if err != nil {
 			return "something went wrong, try again"
 		}
 		if !ok {
-			return "you're not watching " + args[0]
+			return "you're not watching " + target
 		}
 		b.changed()
-		return "stopped watching " + args[0]
+		return "stopped watching " + target
 	case "/list":
 		ws, err := b.Store.ListWatches(ctx, chatID)
 		if err != nil {
