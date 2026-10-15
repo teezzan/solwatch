@@ -16,8 +16,8 @@ import (
 type Store interface {
 	MarkSeen(ctx context.Context, signature string) (bool, error)
 	WatchersOf(ctx context.Context, addresses map[string]struct{}) ([]store.Watch, error)
-	Symbols(ctx context.Context, mints []string) (map[string]string, error)
-	PutSymbols(ctx context.Context, syms map[string]string) error
+	TokenMeta(ctx context.Context, mints []string) (map[string]store.TokenMeta, error)
+	PutTokenMeta(ctx context.Context, meta map[string]store.TokenMeta) error
 }
 
 // TokenLookup resolves mint metadata (Helius DAS getAssetBatch).
@@ -36,6 +36,9 @@ type Processor struct {
 	// alerts are dropped.
 	Breaker *Breaker
 	OnHot   func(ctx context.Context, address string, eventsPerWindow int)
+
+	// Paused, if set and true, drops every transaction (daily budget spent).
+	Paused func() bool
 }
 
 // Run consumes the queue until it is closed, then returns. Closing the
@@ -53,6 +56,10 @@ func (p *Processor) Process(ctx context.Context, tx *helius.EnhancedTransaction)
 	log := p.Log.With("signature", tx.Signature, "type", tx.Type, "source", tx.Source)
 	if tx.Signature == "" {
 		log.Warn("skipping transaction without signature")
+		return
+	}
+	if p.Paused != nil && p.Paused() {
+		log.Debug("dropping transaction: daily budget spent")
 		return
 	}
 	if tx.Failed() {
@@ -118,20 +125,24 @@ func (p *Processor) Process(ctx context.Context, tx *helius.EnhancedTransaction)
 }
 
 // symbols resolves mints from the SQLite cache first, then DAS for the
-// rest. Lookup failures degrade to shortened mint addresses.
+// rest. Every mint DAS is asked about is cached, including ones it has no
+// symbol for, so each mint costs at most one lookup (10 credits per batch).
+// Lookup failures degrade to shortened mint addresses and are retried later.
 func (p *Processor) symbols(ctx context.Context, mints []string, log *slog.Logger) alert.Symbols {
 	sym := alert.Symbols{}
 	if len(mints) == 0 {
 		return sym
 	}
-	cached, err := p.Store.Symbols(ctx, mints)
+	cached, err := p.Store.TokenMeta(ctx, mints)
 	if err != nil {
-		log.Warn("symbol cache read failed", "err", err)
+		log.Warn("token cache read failed", "err", err)
 	}
 	var missing []string
 	for _, m := range mints {
-		if s, ok := cached[m]; ok {
-			sym[m] = s
+		if t, ok := cached[m]; ok {
+			if t.Symbol != "" {
+				sym[m] = t.Symbol
+			}
 		} else {
 			missing = append(missing, m)
 		}
@@ -146,13 +157,18 @@ func (p *Processor) symbols(ctx context.Context, mints []string, log *slog.Logge
 		log.Warn("DAS symbol lookup failed", "err", err, "mints", len(missing))
 		return sym
 	}
-	fresh := map[string]string{}
-	for m, t := range meta {
+	fresh := make(map[string]store.TokenMeta, len(missing))
+	for _, m := range missing {
+		t, ok := meta[m]
+		if !ok {
+			fresh[m] = store.TokenMeta{Decimals: -1} // DAS had nothing: don't ask again
+			continue
+		}
 		sym[m] = t.Symbol
-		fresh[m] = t.Symbol
+		fresh[m] = store.TokenMeta{Symbol: t.Symbol, Decimals: t.Decimals}
 	}
-	if err := p.Store.PutSymbols(ctx, fresh); err != nil {
-		log.Warn("symbol cache write failed", "err", err)
+	if err := p.Store.PutTokenMeta(ctx, fresh); err != nil {
+		log.Warn("token cache write failed", "err", err)
 	}
 	return sym
 }

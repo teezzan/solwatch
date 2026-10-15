@@ -29,9 +29,12 @@ CREATE TABLE IF NOT EXISTS seen (
 );
 CREATE INDEX IF NOT EXISTS seen_at ON seen(seen_at);
 
-CREATE TABLE IF NOT EXISTS tokens (
-	mint   TEXT PRIMARY KEY,
-	symbol TEXT NOT NULL
+-- One row per mint ever looked up via DAS, including mints DAS had no
+-- symbol for (symbol '', decimals -1), so each mint costs at most one lookup.
+CREATE TABLE IF NOT EXISTS token_meta (
+	mint     TEXT PRIMARY KEY,
+	symbol   TEXT NOT NULL,
+	decimals INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS blocked (
@@ -258,32 +261,59 @@ func (s *Store) PruneSeen(ctx context.Context, maxAge time.Duration) (int64, err
 	return res.RowsAffected()
 }
 
-// Symbols returns cached symbols for the given mints.
-func (s *Store) Symbols(ctx context.Context, mints []string) (map[string]string, error) {
-	out := make(map[string]string, len(mints))
+// TokenMeta is cached mint metadata. An empty Symbol means DAS was asked
+// and had nothing; callers should not ask again.
+type TokenMeta struct {
+	Symbol   string
+	Decimals int // -1 if unknown
+}
+
+// TokenMeta returns cached metadata for the given mints. Mints never
+// looked up are absent from the map.
+func (s *Store) TokenMeta(ctx context.Context, mints []string) (map[string]TokenMeta, error) {
+	out := make(map[string]TokenMeta, len(mints))
 	for _, m := range mints {
-		var sym string
-		err := s.db.QueryRowContext(ctx, `SELECT symbol FROM tokens WHERE mint = ?`, m).Scan(&sym)
+		var t TokenMeta
+		err := s.db.QueryRowContext(ctx, `SELECT symbol, decimals FROM token_meta WHERE mint = ?`, m).Scan(&t.Symbol, &t.Decimals)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		out[m] = sym
+		out[m] = t
 	}
 	return out, nil
 }
 
-func (s *Store) PutSymbols(ctx context.Context, syms map[string]string) error {
-	for m, sym := range syms {
+func (s *Store) PutTokenMeta(ctx context.Context, meta map[string]TokenMeta) error {
+	for m, t := range meta {
 		if _, err := s.db.ExecContext(ctx,
-			`INSERT INTO tokens (mint, symbol) VALUES (?, ?) ON CONFLICT(mint) DO UPDATE SET symbol = excluded.symbol`,
-			m, sym); err != nil {
+			`INSERT INTO token_meta (mint, symbol, decimals) VALUES (?, ?, ?)
+			 ON CONFLICT(mint) DO UPDATE SET symbol = excluded.symbol, decimals = excluded.decimals`,
+			m, t.Symbol, t.Decimals); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// ChatsWithWatches returns every chat that watches at least one address.
+func (s *Store) ChatsWithWatches(ctx context.Context) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT chat_id FROM watches ORDER BY chat_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 // Get returns a kv value, or "" if unset.

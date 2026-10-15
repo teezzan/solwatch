@@ -96,10 +96,18 @@ func TestKVAndSymbols(t *testing.T) {
 		t.Fatalf("after Delete = %q", v)
 	}
 
-	s.PutSymbols(ctx, map[string]string{"mint1": "AAA"})
-	got, _ := s.Symbols(ctx, []string{"mint1", "mint2"})
-	if !reflect.DeepEqual(got, map[string]string{"mint1": "AAA"}) {
-		t.Fatalf("Symbols = %v", got)
+	s.PutTokenMeta(ctx, map[string]TokenMeta{"mint1": {Symbol: "AAA", Decimals: 6}, "nosym": {Decimals: -1}})
+	got, _ := s.TokenMeta(ctx, []string{"mint1", "nosym", "mint2"})
+	want := map[string]TokenMeta{"mint1": {Symbol: "AAA", Decimals: 6}, "nosym": {Decimals: -1}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("TokenMeta = %v, want %v", got, want)
+	}
+
+	s.AddWatch(ctx, Watch{ChatID: 9, Address: "A"})
+	s.AddWatch(ctx, Watch{ChatID: 3, Address: "A"})
+	s.AddWatch(ctx, Watch{ChatID: 3, Address: "B"})
+	if chats, _ := s.ChatsWithWatches(ctx); !reflect.DeepEqual(chats, []int64{3, 9}) {
+		t.Errorf("ChatsWithWatches = %v", chats)
 	}
 }
 

@@ -70,15 +70,15 @@ func TestProcessDedupesAndResolvesSymbols(t *testing.T) {
 		t.Fatalf("DAS calls = %d, want 1", das.calls)
 	}
 
-	// GROK is now cached in SQLite. The other mint (SPCX…) had no symbol,
-	// so it is not cached and gets looked up again; GROK comes from SQLite.
+	// Both mints are now cached, including SPCX… which DAS had no symbol
+	// for, so a second transaction with the same mints makes no DAS call.
 	das2 := &fakeDAS{}
 	p.Tokens = das2
 	tx2 := txs[0]
 	tx2.Signature = "another-signature"
 	p.Process(ctx, &tx2)
-	if das2.calls != 1 {
-		t.Fatalf("DAS calls for second tx = %d, want 1 (uncached mint only)", das2.calls)
+	if das2.calls != 0 {
+		t.Fatalf("DAS calls for second tx = %d, want 0", das2.calls)
 	}
 	if got := rec.got[len(rec.got)-1].Summary; got != want {
 		t.Errorf("second alert = %q", got)
